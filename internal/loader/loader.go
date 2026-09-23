@@ -20,20 +20,27 @@ import (
 	"github.com/dhiwarya/linux-eBPF-sensor/internal/event"
 )
 
+// Options configures Load.
+type Options struct {
+	// HostMode captures every cgroup. Otherwise only cgroups added with
+	// AddCgroup are captured; filtering happens in the kernel.
+	HostMode bool
+}
+
 // Loader owns the loaded BPF objects, their links and the ring buffer reader.
 type Loader struct {
-	objs processObjects
-	exec link.Link
-	rd   *ringbuf.Reader
-	boot time.Time
+	objs  processObjects
+	links []link.Link
+	rd    *ringbuf.Reader
+	boot  time.Time
 
 	decodeErrors atomic.Uint64
 	err          atomic.Pointer[error]
 }
 
-// Load removes the memlock limit, loads the BPF objects and attaches the exec
-// tracepoint. The caller must call Close.
-func Load() (*Loader, error) {
+// Load removes the memlock limit, loads the BPF objects and attaches the
+// process hooks. The caller must call Close.
+func Load(opts Options) (*Loader, error) {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("remove memlock limit: %w", err)
 	}
@@ -44,7 +51,14 @@ func Load() (*Loader, error) {
 	}
 	l := &Loader{boot: boot}
 
-	if err := loadProcessObjects(&l.objs, nil); err != nil {
+	spec, err := loadProcess()
+	if err != nil {
+		return nil, fmt.Errorf("load BPF spec: %w", err)
+	}
+	if err := spec.Variables[processVarModeHost].Set(opts.HostMode); err != nil {
+		return nil, fmt.Errorf("set mode_host: %w", err)
+	}
+	if err := spec.LoadAndAssign(&l.objs, nil); err != nil {
 		var ve *ebpf.VerifierError
 		if errors.As(err, &ve) {
 			return nil, fmt.Errorf("load BPF objects: %+v", ve)
@@ -52,10 +66,27 @@ func Load() (*Loader, error) {
 		return nil, fmt.Errorf("load BPF objects: %w", err)
 	}
 
-	l.exec, err = link.Tracepoint("sched", "sched_process_exec", l.objs.HandleExec, nil)
-	if err != nil {
-		l.Close()
-		return nil, fmt.Errorf("attach tracepoint sched/sched_process_exec: %w", err)
+	attach := []struct {
+		name string
+		fn   func() (link.Link, error)
+	}{
+		{"tracepoint/sched/sched_process_exec", func() (link.Link, error) {
+			return link.Tracepoint("sched", "sched_process_exec", l.objs.HandleExec, nil)
+		}},
+		{"tp_btf/sched_process_fork", func() (link.Link, error) {
+			return link.AttachTracing(link.TracingOptions{Program: l.objs.HandleFork})
+		}},
+		{"tracepoint/sched/sched_process_exit", func() (link.Link, error) {
+			return link.Tracepoint("sched", "sched_process_exit", l.objs.HandleExit, nil)
+		}},
+	}
+	for _, a := range attach {
+		lk, err := a.fn()
+		if err != nil {
+			l.Close()
+			return nil, fmt.Errorf("attach %s: %w", a.name, err)
+		}
+		l.links = append(l.links, lk)
 	}
 
 	l.rd, err = ringbuf.NewReader(l.objs.Events)
@@ -66,12 +97,33 @@ func Load() (*Loader, error) {
 	return l, nil
 }
 
-// Events starts reading the ring buffer and returns a channel of decoded exec
+// Hooks lists the attached hooks, for logging.
+func Hooks() []string {
+	return []string{"tracepoint/sched/sched_process_exec", "tp_btf/sched_process_fork", "tracepoint/sched/sched_process_exit"}
+}
+
+// AddCgroup starts capturing processes in the cgroup with this ID.
+func (l *Loader) AddCgroup(id uint64) error {
+	if err := l.objs.TargetCgroups.Put(id, uint8(1)); err != nil {
+		return fmt.Errorf("add cgroup %d to target_cgroups: %w", id, err)
+	}
+	return nil
+}
+
+// RemoveCgroup stops capturing processes in the cgroup with this ID.
+func (l *Loader) RemoveCgroup(id uint64) error {
+	if err := l.objs.TargetCgroups.Delete(id); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+		return fmt.Errorf("remove cgroup %d from target_cgroups: %w", id, err)
+	}
+	return nil
+}
+
+// Events starts reading the ring buffer and returns a channel of decoded
 // events. The channel is closed when ctx is cancelled or reading fails; Err
 // reports the failure, if any. Sends block rather than drop, so a slow
 // consumer back-pressures into the ring buffer, where drops are counted.
-func (l *Loader) Events(ctx context.Context) <-chan event.Exec {
-	out := make(chan event.Exec, 1024)
+func (l *Loader) Events(ctx context.Context) <-chan event.Event {
+	out := make(chan event.Event, 1024)
 
 	stop := context.AfterFunc(ctx, func() { l.rd.Close() })
 	go func() {
@@ -86,7 +138,7 @@ func (l *Loader) Events(ctx context.Context) <-chan event.Exec {
 				}
 				return
 			}
-			ev, err := decodeExec(rec.RawSample, l.boot)
+			ev, err := decode(rec.RawSample, l.boot)
 			if err != nil {
 				l.decodeErrors.Add(1)
 				continue
@@ -135,8 +187,8 @@ func (l *Loader) Close() error {
 	if l.rd != nil {
 		errs = append(errs, l.rd.Close())
 	}
-	if l.exec != nil {
-		errs = append(errs, l.exec.Close())
+	for _, lk := range l.links {
+		errs = append(errs, lk.Close())
 	}
 	errs = append(errs, l.objs.Close())
 	return errors.Join(errs...)

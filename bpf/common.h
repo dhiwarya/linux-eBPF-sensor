@@ -12,6 +12,8 @@
 
 enum event_type {
 	EVENT_EXEC = 1,
+	EVENT_FORK = 2,
+	EVENT_EXIT = 3,
 };
 
 /* Index into drop_count. One slot per reason so userspace can tell them apart. */
@@ -21,8 +23,12 @@ enum drop_reason {
 };
 
 /*
- * Common header at the start of every event in the ring buffer.
- * Clocks: timestamp and start_time are both CLOCK_BOOTTIME nanoseconds.
+ * Common header at the start of every event in the ring buffer. It describes
+ * the process the event is about (for fork: the child).
+ * Clocks: timestamp and the start times are CLOCK_BOOTTIME nanoseconds. The
+ * start times are the thread-group leader's, i.e. the process start time that
+ * /proc/<pid>/stat reports, so userspace can derive the same process GUID from
+ * kernel events and from /proc.
  * IDs (pid, tgid, ppid, uid, gid) are as seen from the initial namespaces.
  */
 struct event {
@@ -35,6 +41,7 @@ struct event {
 	__u64 timestamp;
 	__u64 cgroup_id; /* cgroup v2 ID (inode number of the cgroup directory) */
 	__u64 start_time;
+	__u64 parent_start_time;
 };
 
 /*
@@ -44,6 +51,17 @@ struct event {
 const enum event_type *_unused_event_type __attribute__((unused));
 const enum drop_reason *_unused_drop_reason __attribute__((unused));
 const struct event *_unused_event __attribute__((unused));
+
+/* Capture every cgroup instead of only target_cgroups. Set by the loader. */
+volatile const bool mode_host = false;
+
+/* cgroup v2 IDs of the target container. Written by userspace. */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 64);
+	__type(key, __u64);
+	__type(value, __u8);
+} target_cgroups SEC(".maps");
 
 /* Per-CPU drop counters, summed across CPUs in userspace. */
 struct {
@@ -67,22 +85,35 @@ static __always_inline void count_drop(__u32 reason)
 		(*v)++;
 }
 
-/* Fill the common header from the current task. */
-static __always_inline void fill_header(struct event *e, __u32 type)
+static __always_inline __u64 task_cgroup_id(struct task_struct *task)
 {
-	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-	__u64 pid_tgid = bpf_get_current_pid_tgid();
-	__u64 uid_gid = bpf_get_current_uid_gid();
+	return BPF_CORE_READ(task, cgroups, dfl_cgrp, kn, id);
+}
+
+/* Every program calls this first, before reserving ring buffer space. */
+static __always_inline bool should_capture(__u64 cgroup_id)
+{
+	if (mode_host)
+		return true;
+	return bpf_map_lookup_elem(&target_cgroups, &cgroup_id) != NULL;
+}
+
+/* Fill the common header from task, whose cgroup ID the caller already read. */
+static __always_inline void fill_header(struct event *e, __u32 type,
+					struct task_struct *task, __u64 cgroup_id)
+{
+	struct task_struct *parent = BPF_CORE_READ(task, real_parent);
 
 	e->type = type;
-	e->pid = (__u32)pid_tgid;
-	e->tgid = pid_tgid >> 32;
-	e->ppid = BPF_CORE_READ(task, real_parent, tgid);
-	e->uid = (__u32)uid_gid;
-	e->gid = uid_gid >> 32;
+	e->pid = BPF_CORE_READ(task, pid);
+	e->tgid = BPF_CORE_READ(task, tgid);
+	e->ppid = BPF_CORE_READ(parent, tgid);
+	e->uid = BPF_CORE_READ(task, cred, uid.val);
+	e->gid = BPF_CORE_READ(task, cred, gid.val);
 	e->timestamp = bpf_ktime_get_boot_ns();
-	e->cgroup_id = bpf_get_current_cgroup_id();
-	e->start_time = BPF_CORE_READ(task, start_boottime);
+	e->cgroup_id = cgroup_id;
+	e->start_time = BPF_CORE_READ(task, group_leader, start_boottime);
+	e->parent_start_time = BPF_CORE_READ(parent, group_leader, start_boottime);
 }
 
 #endif /* __ANYONE_SENSOR_COMMON_H */

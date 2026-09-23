@@ -63,6 +63,22 @@ Headers from kernels 6.18 and later (for example `libbpf/vmlinux.h`'s `vmlinux_6
 compile with plain clang: those kernels are built with `-fms-extensions`, and their BTF dump contains
 anonymous tagged struct members such as `struct ns_tree;`.
 
+## Running
+
+```sh
+sudo ./anyone-sensor -container my-app          # one container by name (default mode)
+sudo ./anyone-sensor -container-id 576afc71     # by ID prefix
+sudo ./anyone-sensor -container-label app=web   # by label (must match exactly one)
+sudo ./anyone-sensor -mode host                 # everything on the host
+sudo ./anyone-sensor -container my-app -stats-interval 10s
+make e2e                                        # test/e2e/*.sh as root
+```
+
+Each line on stdout is one event (`exec`, `fork` or `exit`) with `process`, `parent` and
+`container` objects. `process.guid` is stable for the life of a process and across sensor restarts.
+`parent.external` marks a parent outside the target container: `docker exec` processes are
+children of `containerd-shim`, not of the container's init.
+
 ## Debugging
 
 - `bpf_printk("...")` in BPF code, then `sudo cat /sys/kernel/tracing/trace_pipe`.

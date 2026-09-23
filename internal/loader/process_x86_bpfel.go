@@ -21,22 +21,25 @@ const (
 )
 
 type processEvent struct {
-	_         structs.HostLayout
-	Type      uint32
-	Pid       uint32
-	Tgid      uint32
-	Ppid      uint32
-	Uid       uint32
-	Gid       uint32
-	Timestamp uint64
-	CgroupId  uint64
-	StartTime uint64
+	_               structs.HostLayout
+	Type            uint32
+	Pid             uint32
+	Tgid            uint32
+	Ppid            uint32
+	Uid             uint32
+	Gid             uint32
+	Timestamp       uint64
+	CgroupId        uint64
+	StartTime       uint64
+	ParentStartTime uint64
 }
 
 type processEventType uint32
 
 const (
 	processEventTypeEVENT_EXEC processEventType = 1
+	processEventTypeEVENT_FORK processEventType = 2
+	processEventTypeEVENT_EXIT processEventType = 3
 )
 
 type processExecEvent struct {
@@ -52,17 +55,37 @@ type processExecEvent struct {
 	Argv              [4096]uint8
 }
 
+type processExitEvent struct {
+	_        structs.HostLayout
+	Hdr      processEvent
+	Comm     [16]uint8
+	ExitCode uint32
+	Pad      uint32
+}
+
+type processForkEvent struct {
+	_    structs.HostLayout
+	Hdr  processEvent
+	Comm [16]uint8
+}
+
 // Names of all BPF objects in the ELF.
 //
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
 	processMapDropCount        = "drop_count"
 	processMapEvents           = "events"
+	processMapTargetCgroups    = "target_cgroups"
 	processProgHandleExec      = "handle_exec"
+	processProgHandleExit      = "handle_exit"
+	processProgHandleFork      = "handle_fork"
 	processVarUnusedDropReason = "_unused_drop_reason"
 	processVarUnusedEvent      = "_unused_event"
 	processVarUnusedEventType  = "_unused_event_type"
 	processVarUnusedExecEvent  = "_unused_exec_event"
+	processVarUnusedExitEvent  = "_unused_exit_event"
+	processVarUnusedForkEvent  = "_unused_fork_event"
+	processVarModeHost         = "mode_host"
 )
 
 // loadProcess returns the embedded CollectionSpec for process.
@@ -108,14 +131,17 @@ type processSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type processProgramSpecs struct {
 	HandleExec *ebpf.ProgramSpec `ebpf:"handle_exec"`
+	HandleExit *ebpf.ProgramSpec `ebpf:"handle_exit"`
+	HandleFork *ebpf.ProgramSpec `ebpf:"handle_fork"`
 }
 
 // processMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type processMapSpecs struct {
-	DropCount *ebpf.MapSpec `ebpf:"drop_count"`
-	Events    *ebpf.MapSpec `ebpf:"events"`
+	DropCount     *ebpf.MapSpec `ebpf:"drop_count"`
+	Events        *ebpf.MapSpec `ebpf:"events"`
+	TargetCgroups *ebpf.MapSpec `ebpf:"target_cgroups"`
 }
 
 // processVariableSpecs contains global variables before they are loaded into the kernel.
@@ -126,6 +152,9 @@ type processVariableSpecs struct {
 	UnusedEvent      *ebpf.VariableSpec `ebpf:"_unused_event"`
 	UnusedEventType  *ebpf.VariableSpec `ebpf:"_unused_event_type"`
 	UnusedExecEvent  *ebpf.VariableSpec `ebpf:"_unused_exec_event"`
+	UnusedExitEvent  *ebpf.VariableSpec `ebpf:"_unused_exit_event"`
+	UnusedForkEvent  *ebpf.VariableSpec `ebpf:"_unused_fork_event"`
+	ModeHost         *ebpf.VariableSpec `ebpf:"mode_host"`
 }
 
 // processObjects contains all objects after they have been loaded into the kernel.
@@ -148,14 +177,16 @@ func (o *processObjects) Close() error {
 //
 // It can be passed to loadProcessObjects or ebpf.CollectionSpec.LoadAndAssign.
 type processMaps struct {
-	DropCount *ebpf.Map `ebpf:"drop_count"`
-	Events    *ebpf.Map `ebpf:"events"`
+	DropCount     *ebpf.Map `ebpf:"drop_count"`
+	Events        *ebpf.Map `ebpf:"events"`
+	TargetCgroups *ebpf.Map `ebpf:"target_cgroups"`
 }
 
 func (m *processMaps) Close() error {
 	return _ProcessClose(
 		m.DropCount,
 		m.Events,
+		m.TargetCgroups,
 	)
 }
 
@@ -167,6 +198,9 @@ type processVariables struct {
 	UnusedEvent      *ebpf.Variable `ebpf:"_unused_event"`
 	UnusedEventType  *ebpf.Variable `ebpf:"_unused_event_type"`
 	UnusedExecEvent  *ebpf.Variable `ebpf:"_unused_exec_event"`
+	UnusedExitEvent  *ebpf.Variable `ebpf:"_unused_exit_event"`
+	UnusedForkEvent  *ebpf.Variable `ebpf:"_unused_fork_event"`
+	ModeHost         *ebpf.Variable `ebpf:"mode_host"`
 }
 
 // processPrograms contains all programs after they have been loaded into the kernel.
@@ -174,11 +208,15 @@ type processVariables struct {
 // It can be passed to loadProcessObjects or ebpf.CollectionSpec.LoadAndAssign.
 type processPrograms struct {
 	HandleExec *ebpf.Program `ebpf:"handle_exec"`
+	HandleExit *ebpf.Program `ebpf:"handle_exit"`
+	HandleFork *ebpf.Program `ebpf:"handle_fork"`
 }
 
 func (p *processPrograms) Close() error {
 	return _ProcessClose(
 		p.HandleExec,
+		p.HandleExit,
+		p.HandleFork,
 	)
 }
 

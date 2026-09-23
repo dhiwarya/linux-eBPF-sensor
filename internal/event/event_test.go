@@ -47,3 +47,22 @@ func TestCString(t *testing.T) {
 		}
 	}
 }
+
+func TestExitFromRaw(t *testing.T) {
+	tests := []struct {
+		raw          uint32
+		code, signal uint32
+	}{
+		{0, 0, 0},
+		{3 << 8, 3, 0},
+		{255 << 8, 255, 0},
+		{9, 0, 9},          // SIGKILL
+		{0x80 | 11, 0, 11}, // SIGSEGV with core dump flag
+	}
+	for _, tt := range tests {
+		e := ExitFromRaw(tt.raw)
+		if e.Code != tt.code || e.Signal != tt.signal || e.Raw != tt.raw {
+			t.Errorf("ExitFromRaw(%#x) = %+v, want code %d signal %d", tt.raw, e, tt.code, tt.signal)
+		}
+	}
+}

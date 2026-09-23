@@ -7,6 +7,7 @@ Regenerate with `sudo scripts/feature-report.sh`. Add a section per kernel teste
 
 - **BPF-LSM:** the `lsm` program type is compiled in, but `bpf` is not in the active LSM list on stock Ubuntu, so `lsm/*` programs load but never run. Enabling it needs a boot parameter (`lsm=...,bpf`), which the sensor must not require. The file hooks (Phase 3) therefore default to fentry on stock Ubuntu.
 - **cgroup v2** (`cgroup2fs`) with the Docker `systemd` cgroup driver: container cgroups are `/sys/fs/cgroup/system.slice/docker-<id>.scope`.
+- Fork uses `tp_btf/sched_process_fork`, which needs kernel BTF (`/sys/kernel/btf/vmlinux`, 5.5+).
 - `bpf_ktime_get_boot_ns` and ring buffers need kernel 5.8+, so Ubuntu 20.04 (5.4) is not supported.
 
 ## Ubuntu 24.04, arm64 (dev VM)
