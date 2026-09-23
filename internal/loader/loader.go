@@ -17,7 +17,7 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 	"golang.org/x/sys/unix"
 
-	"github.com/example/anyone-sensor/internal/event"
+	"github.com/dhiwarya/linux-eBPF-sensor/internal/event"
 )
 
 // Loader owns the loaded BPF objects, their links and the ring buffer reader.

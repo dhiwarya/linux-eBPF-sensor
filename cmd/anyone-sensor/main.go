@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/example/anyone-sensor/internal/loader"
+	"github.com/dhiwarya/linux-eBPF-sensor/internal/loader"
 )
 
 func main() {

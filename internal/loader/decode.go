@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/example/anyone-sensor/internal/event"
+	"github.com/dhiwarya/linux-eBPF-sensor/internal/event"
 )
 
 // decodeExec turns a raw ring buffer record into an event.Exec. boot is the
