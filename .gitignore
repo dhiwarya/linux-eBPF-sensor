@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# Build output
+/anyone-sensor
+/bin/
+/dist/
+
+# Go
+*.test
+*.out
+coverage.*
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+
+# bpf2go output (*_bpfel.go, *_bpfel.o) is committed on purpose; do not ignore *.o globally.
+
+# sshfs (multipass mount) placeholders for files deleted while open
+.fuse_hidden*
